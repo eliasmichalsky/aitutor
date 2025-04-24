@@ -115,10 +115,23 @@ llm = ChatOpenAI(model="openai/o3-mini")
 llm_with_tools = llm.bind_tools(tools)
 
 def kg_retriever(state: State):
-    user_query = state["messages"][-1].content
+    # Get the latest user message
+    latest_user_message = None
+    for msg in reversed(state["messages"]):
+        # Check if it's a dictionary with a role
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            latest_user_message = msg["content"]
+            break
+        # Check if it's a HumanMessage
+        elif hasattr(msg, "type") and msg.type == "human":
+            latest_user_message = msg.content
+            break
+    
+    user_query = latest_user_message if latest_user_message else ""
     kg_context = query_neo4j_kg(user_query)
+    
     return {
-        "messages": [
+        "messages": state["messages"] + [
             SystemMessage(content=f"Knowledge Graph Context:\n{kg_context}")
         ],
         "user_query": user_query
@@ -145,23 +158,24 @@ def web_retriever(state: State):
     }
 
 def chatbot(state: State):
-    kg_context = [msg for msg in state["messages"] if "Knowledge Graph Context" in msg.content]
-    web_context = [msg for msg in state["messages"] if "Web Search Results" in msg.content]
-    user_query = state["user_query"]
+    # Get ALL messages, including user messages
+    all_messages = state["messages"]
     
+    # Extract context while maintaining the flow of conversation
     system_prompt = f"""You are an AI tutor using Knowledge Graph-Enhanced RAG.
     When answering, follow these principles:
     1. Connect concepts in a logical flow
     2. Ensure factual accuracy based on retrieved information
     3. Explain relationships between concepts clearly
+    4. Remember details shared by the user in previous messages
     
-    Knowledge Graph Context: {kg_context[-1].content if kg_context else 'None'}
-
-    Web Search Results: {web_context[-1].content if web_context else 'None'}
+    Knowledge Graph Context: {[msg.content for msg in state["messages"] if isinstance(msg, SystemMessage) and "Knowledge Graph Context" in msg.content][-1] if any(isinstance(msg, SystemMessage) and "Knowledge Graph Context" in msg.content for msg in state["messages"]) else 'None'}
+    
+    Web Search Results: {[msg.content for msg in state["messages"] if isinstance(msg, SystemMessage) and "Web Search Results" in msg.content][-1] if any(isinstance(msg, SystemMessage) and "Web Search Results" in msg.content for msg in state["messages"]) else 'None'}
     """
     
-    messages = [SystemMessage(content=system_prompt)] + [HumanMessage(content=user_query)]
-    message = llm_with_tools.invoke(messages)
+    # Include the full conversation history when invoking the LLM
+    message = llm_with_tools.invoke(state["messages"] + [SystemMessage(content=system_prompt)])
     return {"messages": [message]}
 
 graph_builder = StateGraph(State)
@@ -179,17 +193,43 @@ graph = graph_builder.compile(checkpointer=memory)
 
 
 def stream_graph_updates(user_input: str):
-    for event in graph.stream(
-        {"messages": [{"role": "user", "content": user_input}]},
-        config={"thread_id": "default-thread"},
-    ):
-        for value in event.values():
-            print("Assistant:", value["messages"][-1].content)
+    try:
+        global conversation_history
+        
+        if 'conversation_history' not in globals():
+            conversation_history = []
+            
+        # Create a proper HumanMessage object
+        human_message = HumanMessage(content=user_input)
+        
+        # Add the new user message
+        conversation_history.append(human_message)
+        
+        # Send the full conversation history to the graph
+        for event in graph.stream(
+            {"messages": conversation_history},
+            config={"thread_id": "default-thread"},
+        ):
+            for value in event.values():
+                latest_message = value["messages"][-1]
+                print("Assistant:", latest_message.content)
+                
+                # Add the assistant's response to our history
+                conversation_history.append(latest_message)
+                
+    except Exception as e:
+        print(f"Error processing input: {e}")
 
 
+conversation_history = []
 while True:
     try:
         user_input = input("User: ")
         stream_graph_updates(user_input)
-    except:
+    except KeyboardInterrupt:
+        print("\nExiting...")
         break
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
