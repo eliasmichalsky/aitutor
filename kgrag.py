@@ -121,27 +121,22 @@ def kg_retriever(state: State):
         "messages": [
             SystemMessage(content=f"Knowledge Graph Context:\n{kg_context}")
         ],
-        "user_query": user_query  # Pass the original query forward
+        "user_query": user_query
     }
 
 def web_retriever(state: State):
-    # Use the original user query, not the KG context
     user_query = state["user_query"]
     
     try:
-        # Make sure the Tavily API is properly configured
         search_results = tool.invoke({"query": user_query})
         
-        # Format the search results
         web_context = "Web Search Results:\n"
         for i, result in enumerate(search_results, 1):
             web_context += f"{i}. {result['title']}\n{result['content']}\n\n"
     except Exception as e:
-        # Handle errors gracefully
         print(f"Tavily search error: {e}")
         web_context = "Web search failed or returned no results."
     
-    # Keep the KG context from the previous step
     return {
         "messages": state["messages"] + [
             SystemMessage(content=web_context)
@@ -150,7 +145,6 @@ def web_retriever(state: State):
     }
 
 def chatbot(state: State):
-    # The LLM now has access to both KG context and web search results
     kg_context = [msg for msg in state["messages"] if "Knowledge Graph Context" in msg.content]
     web_context = [msg for msg in state["messages"] if "Web Search Results" in msg.content]
     user_query = state["user_query"]
@@ -170,15 +164,12 @@ def chatbot(state: State):
     message = llm_with_tools.invoke(messages)
     return {"messages": [message]}
 
-# Update the graph structure
 graph_builder = StateGraph(State)
 
-# Add nodes
 graph_builder.add_node("kg_retriever", kg_retriever)
 graph_builder.add_node("web_retriever", web_retriever)
 graph_builder.add_node("chatbot", chatbot)
 
-# Set entry and flow
 graph_builder.set_entry_point("kg_retriever")
 graph_builder.add_edge("kg_retriever", "web_retriever")
 graph_builder.add_edge("web_retriever", "chatbot")
