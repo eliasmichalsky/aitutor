@@ -1,235 +1,158 @@
 from typing import Annotated
 from typing_extensions import TypedDict
-from langchain_core.messages import SystemMessage
-from langchain_core.messages import HumanMessage
-
-from langgraph.graph import StateGraph, START, END
+from langchain_core.messages import SystemMessage, HumanMessage
+from langgraph.graph import StateGraph
 from langgraph.graph.message import add_messages
 from langchain_openai import ChatOpenAI
-
-from langchain_community.tools.tavily_search import TavilySearchResults
-from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.tools import tool
-
-from neo4j import GraphDatabase
-
 from dotenv import load_dotenv
-import os
+from neo4j import GraphDatabase
+import os, re, json
 
+# Load environment
 load_dotenv()
-
 NEO4J_URI = os.getenv("NEO4J_URI")
 NEO4J_USERNAME = os.getenv("NEO4J_USERNAME")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD))
 
+try:
+    with driver.session() as session:
+        test = session.run("RETURN 'Neo4j connected' AS message").single()
+        print("[✅ Neo4j] ", test["message"])
+except Exception as e:
+    print("[❌ Neo4j ERROR] Failed to connect:", e)
+
+PROGRESS_FILE = "user_progress.json"
+llm = ChatOpenAI(model="openai/o3-mini")
+
 class State(TypedDict):
-    # Messages have the type "list". The add_messages function
-    # in the annotation defines how this state key should be updated
-    # (in this case, it appends messages to the list, rather than overwriting them)
     messages: Annotated[list, add_messages]
     user_query: str
 
-def query_neo4j_kg(user_input: str, max_entities=3) -> str:
-    entities = extract_entities_from_question(user_input)
-    print(f"[KG-RAG] Extracted entities: {entities}")
-    
-    if not entities:
-        return "No relevant entities found in the query."
+def load_progress():
+    if os.path.exists(PROGRESS_FILE):
+        with open(PROGRESS_FILE, "r") as f:
+            return json.load(f)
+    return {f"LG{i}": "not_started" for i in range(1, 11)}
 
-    context_parts = []
+def save_progress(progress):
+    with open(PROGRESS_FILE, "w") as f:
+        json.dump(progress, f, indent=2)
 
+user_progress = load_progress()
+lesson_index = 1
+
+goal_metadata = {
+    "LG1": {
+        "description": "Conduct structured cognitive assessments using MoCA and CID.",
+        "key_concepts": ["MoCA", "CID", "cognitive function", "daily life"]
+    },
+    "LG2": {
+        "description": "Interpret results from cognitive screening and connect them to impacts on daily activities and participation.",
+        "key_concepts": ["screening results", "daily activity", "cognitive deficits", "participation"]
+    },
+    # Add LG3 to LG10 here if needed
+}
+
+def extract_keywords(user_input: str) -> list[str]:
+    stopwords = {"what", "is", "tell", "me", "about", "the", "and", "can", "you", "i", "want", "to", "learn"}
+    tokens = re.findall(r"\b\w+\b", user_input.lower())
+    keywords = [word for word in tokens if word not in stopwords and len(word) > 2]
+    print(f"[DEBUG] Tokens: {tokens}")
+    print(f"[DEBUG] Keywords: {keywords}")
+    return keywords if keywords else tokens
+
+def query_neo4j_kg(user_input: str) -> str:
+    keywords = extract_keywords(user_input)
+    if not keywords:
+        return "No searchable keywords found."
+    triples, seen = [], set()
     with driver.session() as session:
-        for ent in entities:
-            # First find nodes that match our entity
-            result = session.run(
-                """
-                MATCH (n)
-                WHERE toLower(n.name) CONTAINS toLower($ent) OR toLower(n.title) CONTAINS toLower($ent)
-                WITH n
-                // For each matching node, find connected nodes up to 2 hops away
-                MATCH path = (n)-[r*1..2]-(related)
-                // Return the node, relationship types, and related nodes
-                RETURN n, 
-                       [rel in r | type(rel)] as relationship_types,
-                       related
-                LIMIT 15
-                """,
-                ent=ent
-            )
-            
-            # Process the results
-            connections = []
+        for keyword in keywords:
+            result = session.run("""
+            MATCH (n)
+            WHERE any(prop IN keys(n) WHERE toLower(toString(n[prop])) CONTAINS toLower($query))
+            WITH n
+            MATCH path = (n)-[r*1..2]-(m)
+            RETURN DISTINCT n, m, r
+            LIMIT 50
+            """, {"query": keyword})
             for record in result:
-                source_node = record["n"]
-                related_node = record["related"]
-                rel_types = record["relationship_types"]
-                
-                # Get node names/titles
-                source_name = source_node.get("name") or source_node.get("title") or "Unknown"
-                related_name = related_node.get("name") or related_node.get("title") or "Unknown"
-                
-                # For 1-hop relationships
-                if len(rel_types) == 1:
-                    connections.append(f"{source_name} {rel_types[0]} {related_name}")
-                # For 2-hop relationships
-                else:
-                    connections.append(f"{source_name} is connected to {related_name} through {' and '.join(rel_types)}")
-            
-            if connections:
-                context_parts.append(f"Entity '{ent}' context:")
-                context_parts.extend(connections)
+                node_a, node_b, rels = record["n"], record["m"], record["r"]
+                a_name = node_a.get("name") or node_a.get("title") or "[Unnamed Node]"
+                b_name = node_b.get("name") or node_b.get("title") or "[Unnamed Node]"
+                a_type = list(node_a.labels)[0] if node_a.labels else "Unknown"
+                b_type = list(node_b.labels)[0] if node_b.labels else "Unknown"
+                rel_types = " → ".join(set([rel.type for rel in rels]))
+                line = f"{a_name} ({a_type}) —[{rel_types}]→ {b_name} ({b_type})"
+                if line not in seen:
+                    triples.append(line)
+                    seen.add(line)
+    return f"Knowledge Graph Context for '{user_input}':\n" + "\n".join(triples) if triples else f"No knowledge graph context found for '{user_input}'."
+
+def dynamic_quiz(goal_id):
+    if goal_id not in goal_metadata:
+        print(f"⚠️ No quiz available for {goal_id}")
+        return
+    meta = goal_metadata[goal_id]
+    description, concepts = meta["description"], ", ".join(meta["key_concepts"])
+    prompt = f"You are an occupational therapy tutor. Create a question that tests understanding of this goal:\n'{description}'\nExpected concepts: {concepts}\nReturn only the question."
+    question = llm.invoke([HumanMessage(content=prompt)]).content.strip()
+    print(f"\n📘 {question}")
+    user_answer = input("Your answer: ")
+    eval_prompt = f"Evaluate: '{user_answer}'\nShould show knowledge of: {concepts}.\nDoes the answer show full understanding? Reply 'yes' or 'no' with 1 line of feedback."
+    result = llm.invoke([HumanMessage(content=eval_prompt)]).content.strip()
+    print("\n🧠 Feedback:", result)
+    if "yes" in result.lower():
+        user_progress[goal_id] = "mastered"
+        print(f"🎉 You've mastered {goal_id}!")
+    else:
+        user_progress[goal_id] = "in_progress"
+        print(f"🔄 Keep working on {goal_id}.")
+    save_progress(user_progress)
+
+def tutor_lesson(goal_id):
+    meta = goal_metadata[goal_id]
+    description = meta["description"]
+    prompt = f"You are a dementia tutor. Teach this concept step by step in simple language, like explaining it to a student:\n{description}"
+    response = llm.invoke([HumanMessage(content=prompt)]).content
+    print("\n📖 Lesson:")
+    print(response)
+    print("\n💬 You can ask follow-up questions, or type 'quiz' to test your understanding.")
+
+def start_lesson_sequence():
+    global lesson_index
+    while lesson_index <= 10:
+        goal_id = f"LG{lesson_index}"
+        if user_progress[goal_id] == "mastered":
+            lesson_index += 1
+            continue
+        tutor_lesson(goal_id)
+        while True:
+            user_input = input("\nYou: ").strip()
+            if user_input.lower() == "quiz":
+                dynamic_quiz(goal_id)
+                if user_progress[goal_id] == "mastered":
+                    lesson_index += 1
+                    break
             else:
-                context_parts.append(f"No connections found for '{ent}' in the knowledge graph.")
+                answer = llm.invoke([HumanMessage(content=user_input)]).content
+                print("Tutor:", answer)
+    print("\n✅ All kursmål completed!")
 
-    return "\n".join(context_parts)
-
-
-
-def extract_entities_from_question(question: str) -> list[str]:
-    prompt = (
-        "Extract the key movie-related entities from the following question. "
-        "Return ONLY a comma-separated list of movie titles, actor names, or other related terms "
-        "with no additional text, prefixes, or formatting.\n\n"
-        f"Question: {question}"
-    )
-    response = llm.invoke([HumanMessage(content=prompt)])
-    
-    clean_response = response.content
-
-    if "•" in clean_response or "\n-" in clean_response:
-        items = []
-        for line in clean_response.split("\n"):
-            if "•" in line:
-                items.append(line.split("•")[1].strip())
-            elif line.strip().startswith("-"):
-                items.append(line.strip()[1:].strip())
-        clean_response = ", ".join(items)
-    return [e.strip() for e in clean_response.split(",") if e.strip()]
-
-
-tool = TavilySearchResults(max_results=2)
-tools = [tool]
-llm = ChatOpenAI(model="openai/o3-mini")
-llm_with_tools = llm.bind_tools(tools)
-
-def kg_retriever(state: State):
-    # Get the latest user message
-    latest_user_message = None
-    for msg in reversed(state["messages"]):
-        # Check if it's a dictionary with a role
-        if isinstance(msg, dict) and msg.get("role") == "user":
-            latest_user_message = msg["content"]
+# Launch tutor
+if __name__ == "__main__":
+    print("Welcome to the AI Dementia Tutor! Type 'start' to begin your learning journey.")
+    while True:
+        user_input = input(">>> ").strip().lower()
+        if user_input == "start":
+            start_lesson_sequence()
             break
-        # Check if it's a HumanMessage
-        elif hasattr(msg, "type") and msg.type == "human":
-            latest_user_message = msg.content
+        elif user_input == "progress":
+            for k, v in user_progress.items():
+                print(f"{k}: {v}")
+        elif user_input == "exit":
             break
-    
-    user_query = latest_user_message if latest_user_message else ""
-    kg_context = query_neo4j_kg(user_query)
-    
-    return {
-        "messages": state["messages"] + [
-            SystemMessage(content=f"Knowledge Graph Context:\n{kg_context}")
-        ],
-        "user_query": user_query
-    }
-
-def web_retriever(state: State):
-    user_query = state["user_query"]
-    
-    try:
-        search_results = tool.invoke({"query": user_query})
-        
-        web_context = "Web Search Results:\n"
-        for i, result in enumerate(search_results, 1):
-            web_context += f"{i}. {result['title']}\n{result['content']}\n\n"
-    except Exception as e:
-        print(f"Tavily search error: {e}")
-        web_context = "Web search failed or returned no results."
-    
-    return {
-        "messages": state["messages"] + [
-            SystemMessage(content=web_context)
-        ],
-        "user_query": user_query
-    }
-
-def chatbot(state: State):
-    # Get ALL messages, including user messages
-    all_messages = state["messages"]
-    
-    # Extract context while maintaining the flow of conversation
-    system_prompt = f"""You are an AI tutor using Knowledge Graph-Enhanced RAG.
-    When answering, follow these principles:
-    1. Connect concepts in a logical flow
-    2. Ensure factual accuracy based on retrieved information
-    3. Explain relationships between concepts clearly
-    4. Remember details shared by the user in previous messages
-    
-    Knowledge Graph Context: {[msg.content for msg in state["messages"] if isinstance(msg, SystemMessage) and "Knowledge Graph Context" in msg.content][-1] if any(isinstance(msg, SystemMessage) and "Knowledge Graph Context" in msg.content for msg in state["messages"]) else 'None'}
-    
-    Web Search Results: {[msg.content for msg in state["messages"] if isinstance(msg, SystemMessage) and "Web Search Results" in msg.content][-1] if any(isinstance(msg, SystemMessage) and "Web Search Results" in msg.content for msg in state["messages"]) else 'None'}
-    """
-    
-    # Include the full conversation history when invoking the LLM
-    message = llm_with_tools.invoke(state["messages"] + [SystemMessage(content=system_prompt)])
-    return {"messages": [message]}
-
-graph_builder = StateGraph(State)
-
-graph_builder.add_node("kg_retriever", kg_retriever)
-graph_builder.add_node("web_retriever", web_retriever)
-graph_builder.add_node("chatbot", chatbot)
-
-graph_builder.set_entry_point("kg_retriever")
-graph_builder.add_edge("kg_retriever", "web_retriever")
-graph_builder.add_edge("web_retriever", "chatbot")
-
-memory = MemorySaver()
-graph = graph_builder.compile(checkpointer=memory)
-
-
-def stream_graph_updates(user_input: str):
-    try:
-        global conversation_history
-        
-        if 'conversation_history' not in globals():
-            conversation_history = []
-            
-        # Create a proper HumanMessage object
-        human_message = HumanMessage(content=user_input)
-        
-        # Add the new user message
-        conversation_history.append(human_message)
-        
-        # Send the full conversation history to the graph
-        for event in graph.stream(
-            {"messages": conversation_history},
-            config={"thread_id": "default-thread"},
-        ):
-            for value in event.values():
-                latest_message = value["messages"][-1]
-                print("Assistant:", latest_message.content)
-                
-                # Add the assistant's response to our history
-                conversation_history.append(latest_message)
-                
-    except Exception as e:
-        print(f"Error processing input: {e}")
-
-
-conversation_history = []
-while True:
-    try:
-        user_input = input("User: ")
-        stream_graph_updates(user_input)
-    except KeyboardInterrupt:
-        print("\nExiting...")
-        break
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-        import traceback
-        traceback.print_exc()
+        else:
+            print("Type 'start' to begin or 'exit' to quit.")
