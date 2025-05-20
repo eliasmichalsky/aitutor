@@ -41,7 +41,6 @@ def save_progress(progress):
         json.dump(progress, f, indent=2)
 
 user_progress = load_progress()
-lesson_index = 1
 
 goal_metadata = {
     "LG1": {
@@ -52,16 +51,61 @@ goal_metadata = {
         "description": "Interpret results from cognitive screening and connect them to impacts on daily activities and participation.",
         "key_concepts": ["screening results", "daily activity", "cognitive deficits", "participation"]
     },
-    # Add LG3 to LG10 here if needed
+    "LG3": {
+        "description": "Perform systematic environmental assessments to identify supportive or hindering factors.",
+        "key_concepts": ["environmental factors", "function", "safety", "participation"]
+    },
+    "LG4": {
+        "description": "Implement individualized environmental adaptations that support independence, safety, and orientation.",
+        "key_concepts": ["adaptations", "environment", "independence", "orientation", "safety"]
+    },
+    "LG5": {
+        "description": "Prescribe and introduce cognitive support tools and assistive technology tailored to the individual's needs.",
+        "key_concepts": ["assistive technology", "cognitive support", "dementia stages", "needs assessment"]
+    },
+    "LG6": {
+        "description": "Plan and deliver activity-based interventions that promote independence and meaningfulness.",
+        "key_concepts": ["interventions", "activity-based", "meaning", "independence"]
+    },
+    "LG7": {
+        "description": "Coach relatives and staff in strategies to support everyday activities for people with dementia, with a person-centered care focus.",
+        "key_concepts": ["caregiver strategies", "person-centered care", "relatives", "staff"]
+    },
+    "LG8": {
+        "description": "Document occupational therapy interventions in the dementia field using the ICF framework.",
+        "key_concepts": ["documentation", "ICF", "intervention", "communication"]
+    },
+    "LG9": {
+        "description": "Write structured referral responses based on functional and activity assessments to support basic dementia investigations.",
+        "key_concepts": ["referral", "assessment", "report", "dementia investigation"]
+    },
+    "LG10": {
+        "description": "Adapt occupational therapy interventions based on the progression of the disease from mild cognitive impairment to severe dementia.",
+        "key_concepts": ["intervention", "progression", "mild cognitive impairment", "severe dementia"]
+    }
 }
 
 def extract_keywords(user_input: str) -> list[str]:
     stopwords = {"what", "is", "tell", "me", "about", "the", "and", "can", "you", "i", "want", "to", "learn"}
     tokens = re.findall(r"\b\w+\b", user_input.lower())
     keywords = [word for word in tokens if word not in stopwords and len(word) > 2]
-    print(f"[DEBUG] Tokens: {tokens}")
-    print(f"[DEBUG] Keywords: {keywords}")
     return keywords if keywords else tokens
+
+def match_input_to_goal(user_input: str) -> str | None:
+    keywords = extract_keywords(user_input)
+    matches = {}
+
+    for goal_id, meta in goal_metadata.items():
+        concepts = [c.lower() for c in meta["key_concepts"]]
+        overlap = set(keywords) & set(concepts)
+        if overlap:
+            matches[goal_id] = len(overlap)
+
+    if not matches:
+        return None
+
+    best_match = max(matches, key=matches.get)
+    return best_match
 
 def query_neo4j_kg(user_input: str) -> str:
     keywords = extract_keywords(user_input)
@@ -91,26 +135,70 @@ def query_neo4j_kg(user_input: str) -> str:
                     seen.add(line)
     return f"Knowledge Graph Context for '{user_input}':\n" + "\n".join(triples) if triples else f"No knowledge graph context found for '{user_input}'."
 
-def dynamic_quiz(goal_id):
+
+def dynamic_quiz(goal_id, lesson_content):
     if goal_id not in goal_metadata:
         print(f"⚠️ No quiz available for {goal_id}")
         return
+
+    # Generate questions based only on what was taught in the lesson
+    prompt = (
+        f"You are an occupational therapy tutor. Based ONLY on the following lesson content, create a 3-question quiz to test understanding:\n\n"
+        f"{lesson_content}\n\n"
+        f"The quiz should:\n"
+        f"- Ask only about information clearly explained in the lesson.\n"
+        f"- Include a mix of basic recall, application, and reasoning.\n"
+        f"- Label the questions Q1, Q2, Q3.\n"
+        f"- Return only the questions."
+    )
+
+    questions_text = llm.invoke([HumanMessage(content=prompt)]).content.strip()
+    questions = re.findall(r"(Q\d[:\.\)]\s*)(.+?)(?=\nQ\d[:\.\)]|\Z)", questions_text, re.DOTALL)
+
+    if not questions or len(questions) < 3:
+        print("❌ Failed to generate structured quiz questions.")
+        return
+
     meta = goal_metadata[goal_id]
-    description, concepts = meta["description"], ", ".join(meta["key_concepts"])
-    prompt = f"You are an occupational therapy tutor. Create a question that tests understanding of this goal:\n'{description}'\nExpected concepts: {concepts}\nReturn only the question."
-    question = llm.invoke([HumanMessage(content=prompt)]).content.strip()
-    print(f"\n📘 {question}")
-    user_answer = input("Your answer: ")
-    eval_prompt = f"Evaluate: '{user_answer}'\nShould show knowledge of: {concepts}.\nDoes the answer show full understanding? Reply 'yes' or 'no' with 1 line of feedback."
-    result = llm.invoke([HumanMessage(content=eval_prompt)]).content.strip()
-    print("\n🧠 Feedback:", result)
-    if "yes" in result.lower():
+    concepts = ", ".join(meta["key_concepts"])
+    correct_answers = 0
+    total = len(questions)
+
+    for label, question in questions:
+        print(f"\n📘 {label.strip()} {question.strip()}")
+        user_answer = input("Your answer: ").strip()
+
+        eval_prompt = (
+            f"You are evaluating a student's answer to a quiz question based on a lesson.\n\n"
+            f"Lesson content:\n{lesson_content}\n\n"
+            f"Question:\n{question.strip()}\n\n"
+            f"Student's answer:\n{user_answer.strip()}\n\n"
+            f"Please do the following:\n"
+            f"1. Decide if the student's answer shows understanding of the core idea (even if the wording differs).\n"
+            f"2. If it does, reply with 'yes' and one sentence of encouraging feedback.\n"
+            f"3. If it does not, reply with 'no' and one short sentence explaining what was missing or unclear.\n"
+            f"Be generous when crediting correct answers. Focus on meaning over exact phrasing."
+        )
+
+
+        result = llm.invoke([HumanMessage(content=eval_prompt)]).content.strip()
+        print("🧠 Feedback:", result)
+
+        if result.lower().startswith("yes"):
+            correct_answers += 1
+
+    print(f"\n✅ You answered {correct_answers} out of {total} correctly.")
+
+    if correct_answers >= 2:
         user_progress[goal_id] = "mastered"
         print(f"🎉 You've mastered {goal_id}!")
     else:
         user_progress[goal_id] = "in_progress"
         print(f"🔄 Keep working on {goal_id}.")
+
     save_progress(user_progress)
+
+
 
 def tutor_lesson(goal_id):
     meta = goal_metadata[goal_id]
@@ -121,38 +209,68 @@ def tutor_lesson(goal_id):
     print(response)
     print("\n💬 You can ask follow-up questions, or type 'quiz' to test your understanding.")
 
-def start_lesson_sequence():
-    global lesson_index
-    while lesson_index <= 10:
-        goal_id = f"LG{lesson_index}"
-        if user_progress[goal_id] == "mastered":
-            lesson_index += 1
-            continue
-        tutor_lesson(goal_id)
-        while True:
-            user_input = input("\nYou: ").strip()
-            if user_input.lower() == "quiz":
-                dynamic_quiz(goal_id)
-                if user_progress[goal_id] == "mastered":
-                    lesson_index += 1
-                    break
+def run_goal_session(goal_id):
+    meta = goal_metadata[goal_id]
+    description = meta["description"]
+
+    # Generate lesson and store it
+    conversation = [
+        HumanMessage(content=f"You are a dementia tutor. Teach this concept step by step in simple language:\n{description}")
+    ]
+    lesson_content = llm.invoke(conversation).content.strip()
+
+    print("\n📖 Lesson:")
+    print(lesson_content)
+    print("\n💬 You can ask follow-up questions, or type 'quiz' to test your understanding.")
+
+    while True:
+        user_input = input("\nYou: ").strip()
+        if user_input.lower() == "quiz":
+            dynamic_quiz(goal_id, lesson_content)
+            print("\n👈 Returning to the learning goals menu...")
+            return
+        elif user_input.lower() in {"exit", "menu", "mål", "next"}:
+            print("\n👈 Returning to the learning goals menu...")
+            return
+        else:
+            conversation.append(HumanMessage(content=user_input))
+            reply = llm.invoke(conversation).content
+            print("Tutor:", reply)
+
+
+
+def list_goals():
+    print("\n📋 Available Learning Goals:")
+    available = False
+    for key, data in goal_metadata.items():
+        status = user_progress.get(key, "not_started")
+        if status != "mastered":
+            symbol = {"not_started": "⬜", "in_progress": "🟡"}.get(status, "⬜")
+            print(f"{symbol} {key}: {data['description']}")
+            available = True
+    if not available:
+        print("🎉 All goals have been mastered!")
+
+def goal_selection_loop():
+    while True:
+        list_goals()
+        user_input = input("\n>>> ").strip().upper()
+        if user_input == "EXIT":
+            break
+        elif user_input == "PROGRESS":
+            for k, v in user_progress.items():
+                print(f"{k}: {v}")
+        elif user_input in goal_metadata and user_progress[user_input] != "mastered":
+            run_goal_session(user_input)
+        else:
+            matched_goal = match_input_to_goal(user_input)
+            if matched_goal and user_progress[matched_goal] != "mastered":
+                print(f"🔍 Matched to goal: {matched_goal} - {goal_metadata[matched_goal]['description']}")
+                run_goal_session(matched_goal)
             else:
-                answer = llm.invoke([HumanMessage(content=user_input)]).content
-                print("Tutor:", answer)
-    print("\n✅ All kursmål completed!")
+                print("❌ Could not match your input to a learning goal or it is already mastered. Try again.")
 
 # Launch tutor
 if __name__ == "__main__":
-    print("Welcome to the AI Dementia Tutor! Type 'start' to begin your learning journey.")
-    while True:
-        user_input = input(">>> ").strip().lower()
-        if user_input == "start":
-            start_lesson_sequence()
-            break
-        elif user_input == "progress":
-            for k, v in user_progress.items():
-                print(f"{k}: {v}")
-        elif user_input == "exit":
-            break
-        else:
-            print("Type 'start' to begin or 'exit' to quit.")
+    print("🎓 Welcome to the AI Dementia Tutor!")
+    goal_selection_loop()
