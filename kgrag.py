@@ -1,4 +1,5 @@
-from typing import Annotated
+# kgrag.py
+from typing import Annotated, List
 from typing_extensions import TypedDict
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph.message import add_messages
@@ -7,35 +8,37 @@ from dotenv import load_dotenv
 from neo4j import GraphDatabase
 import os, re, json
 
-# Load environment variables
-load_dotenv()
+# Ladda miljövariabler
+dotenv_loaded = load_dotenv()
 NEO4J_URI = os.getenv("NEO4J_URI")
 NEO4J_USERNAME = os.getenv("NEO4J_USERNAME")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 
-# Initialize Neo4j driver
+# Initiera Neo4j-driver
 driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD))
 try:
     with driver.session() as session:
-        msg = session.run("RETURN 'Neo4j connected' AS message").single()["message"]
+        msg = session.run("RETURN 'Neo4j ansluten' AS message").single()["message"]
         print("[✅ Neo4j]", msg)
 except Exception as e:
-    print("[❌ Neo4j ERROR] Failed to connect:", e)
+    print("[❌ Neo4j FEL] Kunde inte ansluta:", e)
 
-# Progress file and LLM init
+# Fil för att spara användarens framsteg samt initiera LLM
 PROGRESS_FILE = "user_progress.json"
 llm = ChatOpenAI(model="openai/o3-mini")
 
+# Typ för sessionstillstånd\ nclass State(TypedDict):
 class State(TypedDict):
-    messages: Annotated[list, add_messages]
+    messages: Annotated[List[HumanMessage], add_messages]
     user_query: str
 
-# Load / Save progress
+
+# Ladda och spara framsteg
 def load_progress() -> dict:
     if os.path.exists(PROGRESS_FILE):
         with open(PROGRESS_FILE, 'r') as f:
             return json.load(f)
-    return {f"LG{i}": "not_started" for i in range(1, 11)}
+    return {f"LG{i}": "inte påbörjad" for i in range(1, 11)}
 
 def save_progress(progress: dict):
     with open(PROGRESS_FILE, 'w') as f:
@@ -43,124 +46,119 @@ def save_progress(progress: dict):
 
 user_progress = load_progress()
 
-# Learning goals metadata
+# Metadata för inlärningsmål
 goal_metadata = {
-    "LG1": {"description": "Conduct structured cognitive assessments using MoCA and CID.", "key_concepts": ["MoCA", "CID", "cognitive function", "daily life"]},
-    "LG2": {"description": "Interpret results from cognitive screening and connect them to impacts on daily activities and participation.", "key_concepts": ["screening results", "daily activity", "cognitive deficits", "participation"]},
-    "LG3": {"description": "Perform systematic environmental assessments to identify supportive or hindering factors.", "key_concepts": ["environmental factors", "function", "safety", "participation"]},
-    "LG4": {"description": "Implement individualized environmental adaptations that support independence, safety, and orientation.", "key_concepts": ["adaptations", "environment", "independence", "orientation", "safety"]},
-    "LG5": {"description": "Prescribe and introduce cognitive support tools and assistive technology tailored to the individual's needs.", "key_concepts": ["assistive technology", "cognitive support", "dementia stages", "needs assessment"]},
-    "LG6": {"description": "Plan and deliver activity-based interventions that promote independence and meaningfulness.", "key_concepts": ["interventions", "activity-based", "meaning", "independence"]},
-    "LG7": {"description": "Coach relatives and staff in strategies to support everyday activities for people with dementia, with a person-centered care focus.", "key_concepts": ["caregiver strategies", "person-centered care", "relatives", "staff"]},
-    "LG8": {"description": "Document occupational therapy interventions in the dementia field using the ICF framework.", "key_concepts": ["documentation", "ICF", "intervention", "communication"]},
-    "LG9": {"description": "Write structured referral responses based on functional and activity assessments to support basic dementia investigations.", "key_concepts": ["referral", "assessment", "report", "dementia investigation"]},
-    "LG10": {"description": "Adapt occupational therapy interventions based on the progression of the disease from mild cognitive impairment to severe dementia.", "key_concepts": ["intervention", "progression", "mild cognitive impairment", "severe dementia"]}
+    "LG1": {"description": "Utför strukturerade kognitiva bedömningar med MoCA och CID.", "key_concepts": ["MoCA", "CID", "kognitiv funktion", "vardagsliv"]},
+    "LG2": {"description": "Tolka screeningresultat och koppla till påverkan på dagliga aktiviteter och delaktighet.", "key_concepts": ["screeningresultat", "daglig aktivitet", "kognitiva brister", "delaktighet"]},
+    "LG3": {"description": "Genomför miljöbedömningar för att identifiera stödjande eller hindrande faktorer.", "key_concepts": ["miljöfaktorer", "funktion", "säkerhet", "delaktighet"]},
+    "LG4": {"description": "Anpassa miljön för att stödja självständighet, säkerhet och orientering.", "key_concepts": ["anpassningar", "miljö", "självständighet", "orientering", "säkerhet"]},
+    "LG5": {"description": "Rekommendera och introducera kognitiva hjälpmedel anpassade efter individens behov.", "key_concepts": ["hjälpmedel", "kognitivt stöd", "demensstadier", "behovsanalys"]},
+    "LG6": {"description": "Planera och genomföra aktivitetsbaserade interventioner för självständighet och meningsfullhet.", "key_concepts": ["interventioner", "aktivitetsbaserat", "mening", "självständighet"]},
+    "LG7": {"description": "Vägled anhöriga och personal i strategier för vardagsaktiviteter med personcentrerat fokus.", "key_concepts": ["anhörigstrategier", "personcentrerad vård", "anhöriga", "personal"]},
+    "LG8": {"description": "Dokumentera arbetsterapiinsatser enligt ICF-ramverket.", "key_concepts": ["dokumentation", "ICF", "insats", "kommunikation"]},
+    "LG9": {"description": "Skriv strukturerade remissvar baserade på funktionella bedömningar.", "key_concepts": ["remiss", "bedömning", "rapport", "demensutredning"]},
+    "LG10": {"description": "Anpassa insatser utifrån sjukdomens progression från lindrad svikt till svår demens.", "key_concepts": ["insats", "progression", "lindrad svikt", "svår demens"]}
 }
 
-# Text processing utilities
-def extract_keywords(user_input: str) -> list[str]:
-    stopwords = {"what","is","tell","me","about","the","and","can","you","i","want","to","learn"}
+# Extrahera nyckelord från användarinput
+def extract_keywords(user_input: str) -> List[str]:
+    stopwords = {"vad","är","berätta","om","och","kan","du","jag","vill","lära"}
     tokens = re.findall(r"\b\w+\b", user_input.lower())
-    keywords = [w for w in tokens if w not in stopwords and len(w)>2]
+    keywords = [w for w in tokens if w not in stopwords and len(w) > 2]
     return keywords if keywords else tokens
 
-
+# Matcha input till relevant mål
 def match_input_to_goal(user_input: str) -> str | None:
     kws = extract_keywords(user_input)
-    scores = {gid: len(set(kws) & set(c.lower() for c in meta["key_concepts"]))
-              for gid, meta in goal_metadata.items()}
+    scores = {gid: len(set(kws) & set(c.lower() for c in meta["key_concepts"])) for gid, meta in goal_metadata.items()}
     best = max(scores, key=scores.get)
     return best if scores[best] > 0 else None
 
-# KG-RAG retrieval
+# Hämta kontext från kunskapsgrafen
 def query_neo4j_kg(user_input: str) -> str:
     kws = extract_keywords(user_input)
     if not kws:
-        return "No KG context found."
+        return "Ingen KG-kontekst hittad."
     triples, seen = [], set()
     with driver.session() as session:
         for kw in kws:
             result = session.run(
                 """
                 MATCH (n)
-                WHERE any(prop IN keys(n)
-                          WHERE toLower(toString(n[prop]))
-                                CONTAINS toLower($q))
+                WHERE any(prop IN keys(n) WHERE toLower(toString(n[prop])) CONTAINS toLower($q))
                 WITH n
                 MATCH path=(n)-[r*1..2]-(m)
                 RETURN DISTINCT n, m, r LIMIT 50
                 """, {"q": kw})
             for rec in result:
                 n, m, rels = rec["n"], rec["m"], rec["r"]
-                a = n.get("name", n.get("title", "[Unnamed]"))
-                b = m.get("name", m.get("title", "[Unnamed]"))
-                at = list(n.labels)[0] if n.labels else "Node"
-                bt = list(m.labels)[0] if m.labels else "Node"
+                a = n.get("name", n.get("title", "[Namnlös]"))
+                b = m.get("name", m.get("title", "[Namnlös]"))
                 rt = ",".join({r.type for r in rels})
-                line = f"{a} ({at}) —[{rt}]→ {b} ({bt})"
+                line = f"{a} —[{rt}]→ {b}"
                 if line not in seen:
                     seen.add(line)
                     triples.append(line)
-    return "Knowledge Graph Context for '"+user_input+"':\n" + "\n".join(triples)
+    return "KG-kontekst för '" + user_input + "':\n" + "\n".join(triples)
 
-# Quiz engine
-def dynamic_quiz(goal_id, lesson_content):
+# Skapa quizfrågor som en lista (för bot_interface.py)
+def dynamic_quiz_list(goal_id: str, lesson_text: str) -> list[str]:
     prompt = (
-        f"You are an occupational therapy tutor. Based only on this lesson, create a 3-question quiz:\n" +
-        lesson_content +
-        "\nLabel Q1, Q2, Q3. Return questions only."
+        f"Du är en arbetsterapeutisk handledare. Skapa 3 quizfrågor baserat på lektionen:\n"
+        f"{lesson_text}\n\n"
+        f"Märk frågorna som Q1, Q2, Q3. Returnera endast frågorna."
     )
     quiz_text = llm.invoke([HumanMessage(content=prompt)]).content.strip()
     questions = re.findall(r"(Q[1-3][:\)]\s*.+?)(?=(?:\nQ[1-3]|$))", quiz_text, flags=re.S)
-    if len(questions) < 3:
-        print("❌ Failed to generate quiz questions.")
-        return
-    correct = 0
-    for q in questions:
-        print(q)
-        ans = input("Your answer: ").strip()
-        eval_prompt = (
-            f"Lesson:\n{lesson_content}\nQuestion:\n{q}\nAnswer:\n{ans}\n"
-            "Reply 'yes' or 'no' and one sentence feedback."
-        )
-        fb = llm.invoke([HumanMessage(content=eval_prompt)]).content.strip()
-        print("🧠 Feedback:", fb)
-        if fb.lower().startswith("yes"):
-            correct += 1
-    print(f"✅ You answered {correct}/{len(questions)} correctly.")
-    user_progress[goal_id] = "mastered" if correct >= 2 else "in_progress"
-    save_progress(user_progress)
+    return questions
 
-# Lesson generator
-def tutor_lesson(goal_id):
+
+# Utvärdera elevens svar
+def evaluate_answer(answer: str, question: str, lesson_text: str) -> str:
+    prompt = (
+        f"Du utvärderar ett svar på svenska.\n\n"
+        f"Lektion:\n{lesson_text}\n\n"
+        f"Fråga:\n{question}\n\n"
+        f"Svar:\n{answer}\n\n"
+        "Om det visar förståelse, svara 'ja' följt av en uppmuntrande mening.\n"
+        "Om inte, svara 'nej' och en kort mening om vad som saknas."
+    )
+    return llm.invoke([HumanMessage(content=prompt)]).content.strip()
+
+
+# Generera lektion
+def tutor_lesson(goal_id, level="Nybörjare"):
     desc = goal_metadata[goal_id]["description"]
-    prompt = f"You are a dementia tutor. Teach step by step: {desc}"
+    prompt = f"Du är en handledare i demens. Förklara detta steg-för-steg på {'enkel' if level == 'Nybörjare' else 'medel' if level == 'Medel' else 'avancerad'} nivå:\n\n{desc}"
     lesson = llm.invoke([HumanMessage(content=prompt)]).content.strip()
-    print("📖 Lesson:\n", lesson)
+    print("📖 Lektion:\n", lesson)
     return lesson
 
-# Session with KG-RAG
-def run_goal_session(goal_id):
+
+# Session med KG-RAG
+def run_goal_session(goal_id: str):
     lesson = tutor_lesson(goal_id)
     conversation = [HumanMessage(content=lesson)]
     while True:
-        user_input = input("\nYou: ").strip()
+        user_input = input("\nDu: ").strip()
         if user_input.lower() == "quiz":
-            dynamic_quiz(goal_id, lesson)
+            questions = dynamic_quiz_list(goal_id, lesson)
+            print("Quiz-frågor:")
+            for q in questions:
+                print(q)
             break
-        if user_input.lower() in {"exit", "menu"}:
+        if user_input.lower() in {"avsluta", "meny"}:
             break
         kg = query_neo4j_kg(user_input)
         msgs = [SystemMessage(content=kg)] + conversation + [HumanMessage(content=user_input)]
         reply = llm.invoke(msgs).content.strip()
         print("Tutor:", reply)
-        conversation.append(HumanMessage(content=user_input))
-        conversation.append(HumanMessage(content=reply))
-    print("Returning to menu...")
+        conversation.extend([HumanMessage(content=user_input), HumanMessage(content=reply)])
+    print("Återgår till menyn...")
 
-# CLI utilities
+# CLI-verktyg
 def list_goals():
-    print("Available Learning Goals:")
+    print("Tillgängliga inlärningsmål:")
     for k, meta in goal_metadata.items():
         status = user_progress.get(k)
         if status != "mastered":
@@ -168,22 +166,25 @@ def list_goals():
 
 
 def goal_selection_loop():
+    progress = load_progress()
     while True:
         list_goals()
         cmd = input(">>> ").strip()
-        if cmd.lower() == "exit":
+        if cmd.lower() == "avsluta":
             break
-        if cmd.lower() == "progress":
-            print(user_progress)
-        elif cmd in goal_metadata and user_progress[cmd] != "mastered":
+        if cmd.lower() == "framsteg":
+            print(progress)
+        elif cmd in goal_metadata and progress.get(cmd) != "mastered":
             run_goal_session(cmd)
+            progress = load_progress()
         else:
             m = match_input_to_goal(cmd)
-            if m and user_progress.get(m) != "mastered":
+            if m and progress.get(m) != "mastered":
                 run_goal_session(m)
+                progress = load_progress()
             else:
-                print("Invalid choice. Please try again.")
+                print("Ogiltigt val. Försök igen.")
 
 if __name__ == "__main__":
-    print("🎓 Welcome to the AI Dementia Tutor!")
+    print("🎓 Välkommen till AI Demenstutör!")
     goal_selection_loop()
