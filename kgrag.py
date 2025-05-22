@@ -249,6 +249,8 @@ def chatbot(state: State):
     
     kg_context = get_latest_content("Knowledge Graph Context")
     web_results = get_latest_content("Web Search Results")
+
+    print(f"Knowledge Graph Context: {kg_context} \n Web Search Results: {web_results}")
     
     system_prompt = f"""You are an AI tutor using Knowledge Graph-Enhanced RAG for dementia education.
     When answering, follow these principles:

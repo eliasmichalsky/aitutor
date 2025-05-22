@@ -13,7 +13,7 @@ load_dotenv()
 
 # Configure Streamlit page
 st.set_page_config(
-    page_title="AI Demenstutör", 
+    page_title="AI Demenslärare", 
     layout="wide",
     page_icon="🧠"
 )
@@ -76,7 +76,7 @@ if selected_goal not in st.session_state.goal_data:
 goal_state = st.session_state.goal_data[selected_goal]
 
 # Main interface
-st.title("🧠 AI Demenstutör")
+st.title("🧠 AI Demenslärare")
 st.header(f"🎯 {selected_desc}")
 
 # Progress indicator
@@ -131,7 +131,7 @@ if goal_state["lesson"]:
                    unsafe_allow_html=True)
 
 # Chat section
-st.subheader("💬 Chatt med AI-tutorn")
+st.subheader("💬 Chatt med AI-läraren")
 
 # Display chat history
 chat_container = st.container()
@@ -161,7 +161,7 @@ def handle_chat_input():
         goal_state["chat_history"].append(("Tutor", response))
 
 # Chat input field
-chat_input = st.chat_input("Ställ en fråga till tutorn...")
+chat_input = st.chat_input("Ställ en fråga till läraren...")
 if chat_input:
     st.session_state.chat_input = chat_input
     handle_chat_input()
@@ -286,14 +286,3 @@ with st.sidebar.expander("ℹ️ Systeminformation"):
     st.write(f"**Aktivt mål:** {selected_goal}")
     st.write(f"**Chatthistorik:** {len(goal_state['chat_history'])} meddelanden")
     st.write(f"**KG-anslutning:** {'✅ Ansluten' if kgrag.driver else '❌ Frånkopplad'}")
-
-# Footer
-st.markdown("---")
-st.markdown(
-    """
-    <div style='text-align: center; color: gray;'>
-    🧠 AI Demenstutör - Använder Knowledge Graph-Enhanced RAG för personaliserad inlärning
-    </div>
-    """, 
-    unsafe_allow_html=True
-)
