@@ -1,15 +1,3 @@
-# aitutor
+# KG-RAG AI Tutor for the Dementia Care Domain
 
-.env
-
-OPENAI_API_KEY = 
-OPENAI_API_BASE = 
-LANGSMITH_API_KEY = 
-LANGSMITH_PROJECT = 
-LANGSMITH_TRACING = "true"
-LANGSMITH_ENDPOINT = "https://api.smith.langchain.com"
-TAVILY_API_KEY = 
-
-NEO4J_URI=
-NEO4J_USERNAME=
-NEO4J_PASSWORD=
+Code for knowledge graph construction in /graphConstruction
